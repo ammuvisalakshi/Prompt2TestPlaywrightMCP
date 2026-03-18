@@ -40,10 +40,11 @@ phases:
       - docker push $PLAYWRIGHT_IMAGE_URI
       - docker push $ECR_REGISTRY/$IMAGE_REPO_NAME:latest
       - echo "Push completed — $PLAYWRIGHT_IMAGE_URI"
-      - printf '{"playwrightImageUri":"%s"}' $PLAYWRIGHT_IMAGE_URI > imageDetail.json
+      - printf '[{"name":"playwright-mcp","imageUri":"%s"}]' $PLAYWRIGHT_IMAGE_URI > imagedefinitions.json
+      - echo "Push completed — $PLAYWRIGHT_IMAGE_URI"
 
 artifacts:
   files:
-    - imageDetail.json
+    - imagedefinitions.json
     - infra/**/*
     - buildspec.yml

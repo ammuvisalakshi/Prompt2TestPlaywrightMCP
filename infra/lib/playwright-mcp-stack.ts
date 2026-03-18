@@ -25,11 +25,13 @@ export class PlaywrightMCPStack extends cdk.Stack {
     });
 
     // ── ECR Repository ───────────────────────────────────────────────────
-    const ecrRepo = new ecr.Repository(this, "PlaywrightMCPRepository", {
-      repositoryName: "prompt2test-playwright-mcp",
-      removalPolicy: cdk.RemovalPolicy.RETAIN,
-      lifecycleRules: [{ maxImageCount: 5, description: "Keep last 5 images" }],
-    });
+    // Imported (not created) so stack create/delete never conflicts with
+    // an existing repo. Create once via CLI: aws ecr create-repository --repository-name prompt2test-playwright-mcp
+    const ecrRepo = ecr.Repository.fromRepositoryName(
+      this,
+      "PlaywrightMCPRepository",
+      "prompt2test-playwright-mcp"
+    );
 
     // ── IAM Role for CodeBuild ───────────────────────────────────────────
     const codeBuildRole = new iam.Role(this, "CodeBuildRole", {
@@ -80,13 +82,16 @@ export class PlaywrightMCPStack extends cdk.Stack {
       logging: { cloudWatch: { logGroup, prefix: "codebuild" } },
     });
 
-    // ── CodePipeline — pulls from GitHub, builds, pushes to ECR ─────────
+    // ── CodePipeline — Source → Build → Deploy ───────────────────────────
     const sourceOutput = new codepipeline.Artifact("SourceOutput");
     const buildOutput  = new codepipeline.Artifact("BuildOutput");
 
-    new codepipeline.Pipeline(this, "PlaywrightPipeline", {
+    // Pipeline is defined after ECS service (see below) so we build it last
+    // to avoid forward-reference issues. Stored here for use in Stage 3.
+    const pipeline = new codepipeline.Pipeline(this, "PlaywrightPipeline", {
       pipelineName: "prompt2test-playwright-mcp-pipeline",
       stages: [
+        // Stage 1 — pull from GitHub
         {
           stageName: "Source",
           actions: [
@@ -100,6 +105,7 @@ export class PlaywrightMCPStack extends cdk.Stack {
             }),
           ],
         },
+        // Stage 2 — build ARM64 Docker image and push to ECR
         {
           stageName: "Build",
           actions: [
@@ -216,17 +222,31 @@ export class PlaywrightMCPStack extends cdk.Stack {
     });
 
     // ── ECS Fargate Service ───────────────────────────────────────────────
+    // desiredCount: 0 on first deploy — no image in ECR yet.
+    // Pipeline Stage 3 will force a new deployment after pushing the image.
     const service = new ecs.FargateService(this, "PlaywrightService", {
       serviceName: "prompt2test-playwright-mcp",
       cluster,
       taskDefinition: taskDef,
-      desiredCount: 1,
+      desiredCount: 0,
       assignPublicIp: true,
       securityGroups: [sg],
       vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
     });
 
     service.attachToApplicationTargetGroup(targetGroup);
+
+    // Stage 3 — deploy new image to ECS (runs after Build pushes to ECR)
+    pipeline.addStage({
+      stageName: "Deploy",
+      actions: [
+        new codepipeline_actions.EcsDeployAction({
+          actionName: "Deploy_to_ECS",
+          service,
+          imageFile: buildOutput.atPath("imagedefinitions.json"),
+        }),
+      ],
+    });
 
     // ── Outputs ──────────────────────────────────────────────────────────
     new cdk.CfnOutput(this, "ECRRepositoryUri", {
