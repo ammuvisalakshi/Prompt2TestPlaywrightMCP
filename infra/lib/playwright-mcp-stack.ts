@@ -130,8 +130,8 @@ export class PlaywrightMCPStack extends cdk.Stack {
       securityGroupName: "prompt2test-playwright-mcp-sg",
       description: "Playwright MCP: port 3000 (MCP) + port 6080 (noVNC)",
     });
-    sg.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(3000), "MCP SSE — agent connects here");
-    sg.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(6080), "noVNC — watch browser live (headed mode)");
+    sg.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(3000), "MCP SSE - agent connects here");
+    sg.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(6080), "noVNC - watch browser live (headed mode)");
 
     // ── ECS Cluster ───────────────────────────────────────────────────────
     const cluster = new ecs.Cluster(this, "PlaywrightCluster", {
