@@ -5,7 +5,7 @@ import { PlaywrightMCPStack } from "../lib/playwright-mcp-stack";
 
 const app = new cdk.App();
 
-new PlaywrightMCPStack(app, "PlaywrightMCPStack", {
+new PlaywrightMCPStack(app, "Prompt2TestPlaywrightMCPStack", {
   env: {
     account: process.env.CDK_DEFAULT_ACCOUNT,
     region: process.env.CDK_DEFAULT_REGION ?? "us-east-1",
