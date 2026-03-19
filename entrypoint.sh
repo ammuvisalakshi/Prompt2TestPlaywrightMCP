@@ -16,6 +16,7 @@ set -e
 
 BROWSER_MODE=${BROWSER_MODE:-headless}
 MCP_PORT=${MCP_PORT:-3000}
+MCP_INTERNAL_PORT=3001
 NOVNC_PORT=${NOVNC_PORT:-6080}
 HEALTH_PORT=${HEALTH_PORT:-8080}
 DISPLAY_NUM=${DISPLAY_NUM:-99}
@@ -38,6 +39,29 @@ node -e "
     res.writeHead(200, {'Content-Type': 'text/plain'});
     res.end('ok');
   }).listen(${HEALTH_PORT}, () => console.log('Health server listening on port ${HEALTH_PORT}'));
+" &
+
+# ── Host-rewriting proxy (port 3000 external → port 3001 internal) ────────
+# playwright-mcp rejects connections whose Host header != localhost.
+# This proxy accepts external ALB traffic and rewrites Host before forwarding.
+node -e "
+  const http = require('http');
+  const INTERNAL = ${MCP_INTERNAL_PORT};
+  http.createServer((req, res) => {
+    const opts = {
+      hostname: 'localhost',
+      port: INTERNAL,
+      path: req.url,
+      method: req.method,
+      headers: { ...req.headers, host: 'localhost:' + INTERNAL }
+    };
+    const proxy = http.request(opts, (upstream) => {
+      res.writeHead(upstream.statusCode, upstream.headers);
+      upstream.pipe(res);
+    });
+    proxy.on('error', (e) => { res.writeHead(502); res.end(e.message); });
+    req.pipe(proxy);
+  }).listen(${MCP_PORT}, '0.0.0.0', () => console.log('Proxy listening on 0.0.0.0:${MCP_PORT} → localhost:' + INTERNAL));
 " &
 
 if [ "$BROWSER_MODE" = "headed" ]; then
@@ -69,20 +93,16 @@ if [ "$BROWSER_MODE" = "headed" ]; then
 
     echo "[headed] noVNC ready — open http://<HOST>:${NOVNC_PORT}/vnc.html to watch the browser"
 
-    echo "[headed] Starting Playwright MCP server on port ${MCP_PORT}..."
+    echo "[headed] Starting Playwright MCP server on internal port ${MCP_INTERNAL_PORT}..."
     exec npx @playwright/mcp \
-        --port ${MCP_PORT} \
-        --host 0.0.0.0 \
-        --allowed-origins "*" \
+        --port ${MCP_INTERNAL_PORT} \
         --browser chromium
 
 else
 
-    echo "[headless] Starting Playwright MCP server on port ${MCP_PORT}..."
+    echo "[headless] Starting Playwright MCP server on internal port ${MCP_INTERNAL_PORT}..."
     exec npx @playwright/mcp \
-        --port ${MCP_PORT} \
-        --host 0.0.0.0 \
-        --allowed-origins "*" \
+        --port ${MCP_INTERNAL_PORT} \
         --browser chromium \
         --headless
 
