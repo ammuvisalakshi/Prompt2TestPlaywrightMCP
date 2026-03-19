@@ -72,6 +72,7 @@ if [ "$BROWSER_MODE" = "headed" ]; then
     echo "[headed] Starting Playwright MCP server on port ${MCP_PORT}..."
     exec npx @playwright/mcp \
         --port ${MCP_PORT} \
+        --host 0.0.0.0 \
         --browser chromium
 
 else
@@ -79,6 +80,7 @@ else
     echo "[headless] Starting Playwright MCP server on port ${MCP_PORT}..."
     exec npx @playwright/mcp \
         --port ${MCP_PORT} \
+        --host 0.0.0.0 \
         --browser chromium \
         --headless
 
