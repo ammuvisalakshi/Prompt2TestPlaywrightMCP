@@ -9,6 +9,7 @@
 #   BROWSER_MODE   headed | headless  (default: headless)
 #   MCP_PORT       MCP SSE port       (default: 3000)
 #   NOVNC_PORT     noVNC web port     (default: 6080)
+#   HEALTH_PORT    ALB health check   (default: 8080)
 #   DISPLAY_NUM    Xvfb display num   (default: 99)
 
 set -e
@@ -16,17 +17,28 @@ set -e
 BROWSER_MODE=${BROWSER_MODE:-headless}
 MCP_PORT=${MCP_PORT:-3000}
 NOVNC_PORT=${NOVNC_PORT:-6080}
+HEALTH_PORT=${HEALTH_PORT:-8080}
 DISPLAY_NUM=${DISPLAY_NUM:-99}
 DISPLAY=:${DISPLAY_NUM}
 
 echo "========================================"
 echo "  Playwright MCP Server"
-echo "  Mode    : ${BROWSER_MODE}"
-echo "  MCP Port: ${MCP_PORT}"
+echo "  Mode        : ${BROWSER_MODE}"
+echo "  MCP Port    : ${MCP_PORT}"
+echo "  Health Port : ${HEALTH_PORT}"
 if [ "$BROWSER_MODE" = "headed" ]; then
-echo "  noVNC   : ${NOVNC_PORT}"
+echo "  noVNC       : ${NOVNC_PORT}"
 fi
 echo "========================================"
+
+# ── Health check server (port 8080) — used by ALB ────────────────────────
+# Runs in background, responds 200 OK to any request
+node -e "
+  require('http').createServer((req, res) => {
+    res.writeHead(200, {'Content-Type': 'text/plain'});
+    res.end('ok');
+  }).listen(${HEALTH_PORT}, () => console.log('Health server listening on port ${HEALTH_PORT}'));
+" &
 
 if [ "$BROWSER_MODE" = "headed" ]; then
 
