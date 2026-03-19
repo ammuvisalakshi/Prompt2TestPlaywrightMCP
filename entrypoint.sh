@@ -73,6 +73,7 @@ if [ "$BROWSER_MODE" = "headed" ]; then
     exec npx @playwright/mcp \
         --port ${MCP_PORT} \
         --host 0.0.0.0 \
+        --allowed-origins "*" \
         --browser chromium
 
 else
@@ -81,6 +82,7 @@ else
     exec npx @playwright/mcp \
         --port ${MCP_PORT} \
         --host 0.0.0.0 \
+        --allowed-origins "*" \
         --browser chromium \
         --headless
 
