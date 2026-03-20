@@ -14,6 +14,11 @@
 
 set -e
 
+# Kill any leftover browser processes from a previous crashed session
+pkill -f chromium 2>/dev/null || true
+pkill -f chrome 2>/dev/null || true
+rm -f /tmp/.com.google.Chrome.* /tmp/chrome_* 2>/dev/null || true
+
 BROWSER_MODE=${BROWSER_MODE:-headless}
 MCP_PORT=${MCP_PORT:-3000}
 MCP_INTERNAL_PORT=3001
