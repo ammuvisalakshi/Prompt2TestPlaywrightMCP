@@ -17,11 +17,8 @@ export class PlaywrightMCPStack extends cdk.Stack {
     const connectionArn = `arn:aws:codeconnections:${this.region}:${this.account}:connection/b49882b2-aec0-4020-a219-fc3978a8cb89`;
 
     // ── ECR Repository ────────────────────────────────────────────────────
-    const ecrRepo = new ecr.Repository(this, "PlaywrightMCPRepo", {
-      repositoryName: "prompt2test-playwright-mcp",
-      removalPolicy: cdk.RemovalPolicy.RETAIN,
-      lifecycleRules: [{ maxImageCount: 5, description: "Keep last 5 images" }],
-    });
+    // Import existing repo (retained from previous deploy)
+    const ecrRepo = ecr.Repository.fromRepositoryName(this, "PlaywrightMCPRepo", "prompt2test-playwright-mcp");
 
     // ── CloudWatch Log Group ──────────────────────────────────────────────
     const logGroup = new logs.LogGroup(this, "PlaywrightLogGroup", {
