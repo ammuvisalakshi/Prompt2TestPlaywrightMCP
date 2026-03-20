@@ -64,8 +64,13 @@ node -e "
     const proxy = http.request(opts, (upstream) => {
       res.writeHead(upstream.statusCode, upstream.headers);
       upstream.pipe(res);
+      // Forward upstream close back to client
+      upstream.on('close', () => res.end());
     });
     proxy.on('error', (e) => { res.writeHead(502); res.end(e.message); });
+    // When client disconnects, immediately close upstream so playwright-mcp
+    // receives the close signal and tears down the browser context.
+    req.on('close', () => proxy.destroy());
     req.pipe(proxy);
   }).listen(${MCP_PORT}, '0.0.0.0', () => console.log('Proxy listening on 0.0.0.0:${MCP_PORT} → localhost:' + INTERNAL));
 " &
