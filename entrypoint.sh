@@ -14,10 +14,11 @@
 
 set -e
 
-# Kill any leftover browser processes from a previous crashed session
+# Kill any leftover browser processes and wipe profile locks
 pkill -f chromium 2>/dev/null || true
 pkill -f chrome 2>/dev/null || true
 rm -f /tmp/.com.google.Chrome.* /tmp/chrome_* 2>/dev/null || true
+rm -rf /tmp/playwright-* /root/.config/chromium /root/.config/google-chrome 2>/dev/null || true
 
 BROWSER_MODE=${BROWSER_MODE:-headless}
 MCP_PORT=${MCP_PORT:-3000}
@@ -101,7 +102,8 @@ if [ "$BROWSER_MODE" = "headed" ]; then
     echo "[headed] Starting Playwright MCP server on internal port ${MCP_INTERNAL_PORT}..."
     exec npx @playwright/mcp \
         --port ${MCP_INTERNAL_PORT} \
-        --browser chromium
+        --browser chromium \
+        --isolated
 
 else
 
@@ -109,6 +111,7 @@ else
     exec npx @playwright/mcp \
         --port ${MCP_INTERNAL_PORT} \
         --browser chromium \
-        --headless
+        --headless \
+        --isolated
 
 fi
