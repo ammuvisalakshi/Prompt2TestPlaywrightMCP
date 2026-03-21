@@ -178,6 +178,29 @@ export class PlaywrightMCPStack extends cdk.Stack {
       defaultTargetGroups: [targetGroup],
     });
 
+    // ── noVNC Target Group + Listener (port 6080) ─────────────────────────
+    const novncTargetGroup = new elbv2.ApplicationTargetGroup(this, "NoVNCTargetGroup", {
+      vpc,
+      port: 6080,
+      protocol: elbv2.ApplicationProtocol.HTTP,
+      targetType: elbv2.TargetType.IP,
+      healthCheck: {
+        port: "8080",
+        path: "/",
+        interval: cdk.Duration.seconds(30),
+        timeout: cdk.Duration.seconds(5),
+        healthyHttpCodes: "200",
+        healthyThresholdCount: 2,
+        unhealthyThresholdCount: 3,
+      },
+    });
+
+    alb.addListener("NoVNCListener", {
+      port: 6080,
+      protocol: elbv2.ApplicationProtocol.HTTP,
+      defaultTargetGroups: [novncTargetGroup],
+    });
+
     // ── ECS Fargate Service ───────────────────────────────────────────────
     const service = new ecs.FargateService(this, "PlaywrightService", {
       serviceName: "prompt2test-playwright-mcp",
@@ -190,6 +213,7 @@ export class PlaywrightMCPStack extends cdk.Stack {
     });
 
     service.attachToApplicationTargetGroup(targetGroup);
+    service.attachToApplicationTargetGroup(novncTargetGroup);
 
     // ── CodePipeline: Source → Build → Deploy to ECS ─────────────────────
     const sourceOutput = new codepipeline.Artifact("SourceOutput");
