@@ -176,6 +176,25 @@ export class PlaywrightMCPStack extends cdk.Stack {
       description: "Security group ID for RunTask network config",
     });
 
+    // ── Warm Pool Service (desiredCount=1, no ALB) ────────────────────────────
+    // Keeps 1 task always running so the agent can claim it instantly (0 cold start).
+    // When agent stops the task after use, the service automatically starts a fresh one.
+    new ecs.FargateService(this, "WarmPoolService", {
+      serviceName: "prompt2test-playwright-warm",
+      cluster,
+      taskDefinition: taskDef,
+      desiredCount: 1,
+      assignPublicIp: true,
+      securityGroups: [sg],
+      vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
+    });
+
+    new ssm.StringParameter(this, "WarmServiceNameParam", {
+      parameterName: "/prompt2test/playwright/warm-service-name",
+      stringValue: "prompt2test-playwright-warm",
+      description: "ECS service name for warm pool — agent claims running tasks from here",
+    });
+
     // ── CodePipeline: Source → Build only (no Deploy — agent spins up tasks on demand) ──
     const sourceOutput = new codepipeline.Artifact("SourceOutput");
     const buildOutput  = new codepipeline.Artifact("BuildOutput");
