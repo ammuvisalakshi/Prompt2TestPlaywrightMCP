@@ -8,7 +8,7 @@ import * as codepipeline from "aws-cdk-lib/aws-codepipeline";
 import * as codepipeline_actions from "aws-cdk-lib/aws-codepipeline-actions";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as ecs from "aws-cdk-lib/aws-ecs";
-import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
+import * as ssm from "aws-cdk-lib/aws-ssm";
 
 export class PlaywrightMCPStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -148,85 +148,39 @@ export class PlaywrightMCPStack extends cdk.Stack {
       },
     });
 
-    // ── ALB ───────────────────────────────────────────────────────────────
-    const alb = new elbv2.ApplicationLoadBalancer(this, "PlaywrightALB", {
-      loadBalancerName: "prompt2test-playwright-mcp",
-      vpc,
-      internetFacing: true,
-      securityGroup: sg,
+    // ── SSM Parameters — agent reads these at runtime to call RunTask ────────
+    // Stored in SSM so agent always gets current values without env var updates
+    const subnetIds = vpc.publicSubnets.map(s => s.subnetId).join(",");
+
+    new ssm.StringParameter(this, "ClusterNameParam", {
+      parameterName: "/prompt2test/playwright/cluster-name",
+      stringValue: cluster.clusterName,
+      description: "ECS cluster name for RunTask",
     });
 
-    const targetGroup = new elbv2.ApplicationTargetGroup(this, "PlaywrightTargetGroup", {
-      vpc,
-      port: 3000,
-      protocol: elbv2.ApplicationProtocol.HTTP,
-      targetType: elbv2.TargetType.IP,
-      healthCheck: {
-        port: "8080",         // dedicated health server — always returns 200
-        path: "/",
-        interval: cdk.Duration.seconds(30),
-        timeout: cdk.Duration.seconds(5),
-        healthyHttpCodes: "200",
-        healthyThresholdCount: 2,
-        unhealthyThresholdCount: 3,
-      },
+    new ssm.StringParameter(this, "TaskDefinitionFamilyParam", {
+      parameterName: "/prompt2test/playwright/task-definition-family",
+      stringValue: taskDef.family,
+      description: "ECS task definition family — RunTask resolves to latest active revision",
     });
 
-    alb.addListener("MCPListener", {
-      port: 3000,
-      protocol: elbv2.ApplicationProtocol.HTTP,
-      defaultTargetGroups: [targetGroup],
+    new ssm.StringParameter(this, "SubnetIdsParam", {
+      parameterName: "/prompt2test/playwright/subnet-ids",
+      stringValue: subnetIds,
+      description: "Comma-separated public subnet IDs for RunTask network config",
     });
 
-    // ── noVNC Target Group + Listener (port 6080) ─────────────────────────
-    const novncTargetGroup = new elbv2.ApplicationTargetGroup(this, "NoVNCTargetGroup", {
-      vpc,
-      port: 6080,
-      protocol: elbv2.ApplicationProtocol.HTTP,
-      targetType: elbv2.TargetType.IP,
-      healthCheck: {
-        port: "8080",
-        path: "/",
-        interval: cdk.Duration.seconds(30),
-        timeout: cdk.Duration.seconds(5),
-        healthyHttpCodes: "200",
-        healthyThresholdCount: 2,
-        unhealthyThresholdCount: 3,
-      },
+    new ssm.StringParameter(this, "SecurityGroupIdParam", {
+      parameterName: "/prompt2test/playwright/security-group-id",
+      stringValue: sg.securityGroupId,
+      description: "Security group ID for RunTask network config",
     });
 
-    alb.addListener("NoVNCListener", {
-      port: 6080,
-      protocol: elbv2.ApplicationProtocol.HTTP,
-      defaultTargetGroups: [novncTargetGroup],
-    });
-
-    // ── ECS Fargate Service ───────────────────────────────────────────────
-    const service = new ecs.FargateService(this, "PlaywrightService", {
-      serviceName: "prompt2test-playwright-mcp",
-      cluster,
-      taskDefinition: taskDef,
-      desiredCount: 1,
-      assignPublicIp: true,
-      securityGroups: [sg],
-      vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
-    });
-
-    targetGroup.addTarget(service.loadBalancerTarget({
-      containerName: "playwright-mcp",
-      containerPort: 3000,
-    }));
-
-    novncTargetGroup.addTarget(service.loadBalancerTarget({
-      containerName: "playwright-mcp",
-      containerPort: 6080,
-    }));
-
-    // ── CodePipeline: Source → Build → Deploy to ECS ─────────────────────
+    // ── CodePipeline: Source → Build only (no Deploy — agent spins up tasks on demand) ──
     const sourceOutput = new codepipeline.Artifact("SourceOutput");
     const buildOutput  = new codepipeline.Artifact("BuildOutput");
 
-    const pipeline = new codepipeline.Pipeline(this, "PlaywrightPipeline", {
+    new codepipeline.Pipeline(this, "PlaywrightPipeline", {
       pipelineName: "prompt2test-playwright-mcp-pipeline",
       stages: [
         {
@@ -253,16 +207,6 @@ export class PlaywrightMCPStack extends cdk.Stack {
             }),
           ],
         },
-        {
-          stageName: "Deploy",
-          actions: [
-            new codepipeline_actions.EcsDeployAction({
-              actionName: "Deploy_to_ECS",
-              service,
-              imageFile: buildOutput.atPath("imagedefinitions.json"),
-            }),
-          ],
-        },
       ],
     });
 
@@ -272,20 +216,29 @@ export class PlaywrightMCPStack extends cdk.Stack {
       description: "ECR repo — Playwright MCP Docker images",
     });
 
-    new cdk.CfnOutput(this, "PlaywrightMCPEndpoint", {
-      value: `http://${alb.loadBalancerDnsName}:3000`,
-      description: "MCP SSE endpoint — set as PLAYWRIGHT_MCP_ENDPOINT in AgentCore",
-      exportName: "Prompt2TestPlaywrightMCPEndpoint",
+    new cdk.CfnOutput(this, "ClusterName", {
+      value: cluster.clusterName,
+      description: "ECS cluster — agent calls RunTask here",
     });
 
-    new cdk.CfnOutput(this, "NoVNCUrl", {
-      value: `http://${alb.loadBalancerDnsName}:6080/vnc.html`,
-      description: "noVNC URL — watch headed browser live",
+    new cdk.CfnOutput(this, "TaskDefinitionFamily", {
+      value: taskDef.family,
+      description: "Task definition family — agent uses this for RunTask (resolves to latest revision)",
+    });
+
+    new cdk.CfnOutput(this, "SubnetIds", {
+      value: subnetIds,
+      description: "Public subnet IDs — copy into AgentCore env var PLAYWRIGHT_SUBNET_IDS",
+    });
+
+    new cdk.CfnOutput(this, "SecurityGroupId", {
+      value: sg.securityGroupId,
+      description: "Security group ID — copy into AgentCore env var PLAYWRIGHT_SG_ID",
     });
 
     new cdk.CfnOutput(this, "PipelineConsoleUrl", {
       value: `https://${this.region}.console.aws.amazon.com/codesuite/codepipeline/pipelines/prompt2test-playwright-mcp-pipeline/view`,
-      description: "CodePipeline — monitor deployments",
+      description: "CodePipeline — monitor builds",
     });
   }
 }
