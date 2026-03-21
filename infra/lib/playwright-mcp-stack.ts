@@ -132,7 +132,7 @@ export class PlaywrightMCPStack extends cdk.Stack {
         { containerPort: 8080, name: "health" },
       ],
       environment: {
-        BROWSER_MODE: "headless",
+        BROWSER_MODE: "headed",
         MCP_PORT: "3000",
         NOVNC_PORT: "6080",
         HEALTH_PORT: "8080",
