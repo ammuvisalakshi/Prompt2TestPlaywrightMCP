@@ -212,8 +212,15 @@ export class PlaywrightMCPStack extends cdk.Stack {
       vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
     });
 
-    service.attachToApplicationTargetGroup(targetGroup);
-    service.attachToApplicationTargetGroup(novncTargetGroup);
+    targetGroup.addTarget(service.loadBalancerTarget({
+      containerName: "playwright-mcp",
+      containerPort: 3000,
+    }));
+
+    novncTargetGroup.addTarget(service.loadBalancerTarget({
+      containerName: "playwright-mcp",
+      containerPort: 6080,
+    }));
 
     // ── CodePipeline: Source → Build → Deploy to ECS ─────────────────────
     const sourceOutput = new codepipeline.Artifact("SourceOutput");
