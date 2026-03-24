@@ -8,7 +8,6 @@ import * as codepipeline from "aws-cdk-lib/aws-codepipeline";
 import * as codepipeline_actions from "aws-cdk-lib/aws-codepipeline-actions";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as ecs from "aws-cdk-lib/aws-ecs";
-import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
 import * as ssm from "aws-cdk-lib/aws-ssm";
 
 export class PlaywrightMCPStack extends cdk.Stack {
@@ -93,8 +92,8 @@ export class PlaywrightMCPStack extends cdk.Stack {
       securityGroupName: "prompt2test-playwright-mcp-sg",
       description: "Playwright MCP: port 3000 (MCP) + port 6080 (noVNC)",
     });
-    sg.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(3000), "MCP SSE - NLB forwards here");
-    sg.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(6080), "noVNC - NLB forwards here");
+    sg.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(3000), "MCP SSE - direct from agent");
+    sg.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(6080), "noVNC - direct from browser");
     sg.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(8080), "Health check port");
 
     // ── ECS Cluster ───────────────────────────────────────────────────────
@@ -176,106 +175,6 @@ export class PlaywrightMCPStack extends cdk.Stack {
       description: "Security group ID for RunTask network config",
     });
 
-    // ── NLB (internet-facing, TCP) ────────────────────────────────────────
-    // NLB operates at L4 — passes Host header through unchanged, so
-    // playwright-mcp SSE CSRF check passes. Fixed DNS, load-balanced across tasks.
-    const nlb = new elbv2.NetworkLoadBalancer(this, "PlaywrightNLB", {
-      vpc,
-      internetFacing: true,
-      loadBalancerName: "prompt2test-playwright-nlb",
-      vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
-    });
-
-    // ── Target Group: MCP port 3000 (TCP with HTTP health check on 8080) ──
-    const mcpTG = new elbv2.NetworkTargetGroup(this, "McpTargetGroup", {
-      vpc,
-      port: 3000,
-      protocol: elbv2.Protocol.TCP,
-      targetType: elbv2.TargetType.IP,
-      healthCheck: {
-        protocol: elbv2.Protocol.HTTP,
-        port: "8080",
-        path: "/",
-        healthyThresholdCount: 2,
-        unhealthyThresholdCount: 3,
-        interval: cdk.Duration.seconds(15),
-        timeout: cdk.Duration.seconds(5),
-      },
-    });
-
-    // ── Target Group: noVNC port 6080 (TCP) ──────────────────────────────
-    const novncTG = new elbv2.NetworkTargetGroup(this, "NovncTargetGroup", {
-      vpc,
-      port: 6080,
-      protocol: elbv2.Protocol.TCP,
-      targetType: elbv2.TargetType.IP,
-      healthCheck: {
-        protocol: elbv2.Protocol.HTTP,
-        port: "8080",
-        path: "/",
-        healthyThresholdCount: 2,
-        unhealthyThresholdCount: 3,
-        interval: cdk.Duration.seconds(15),
-        timeout: cdk.Duration.seconds(5),
-      },
-    });
-
-    // ── NLB Listeners ─────────────────────────────────────────────────────
-    nlb.addListener("McpListener", {
-      port: 3000,
-      protocol: elbv2.Protocol.TCP,
-      defaultTargetGroups: [mcpTG],
-    });
-
-    nlb.addListener("NovncListener", {
-      port: 6080,
-      protocol: elbv2.Protocol.TCP,
-      defaultTargetGroups: [novncTG],
-    });
-
-    // ── Warm Pool Service (desiredCount=3) — attached to NLB ─────────────
-    // 3 tasks x 2vCPU/4GB supports ~20 concurrent users (~7 sessions/task).
-    // playwright-mcp --isolated gives each session its own browser context.
-    const warmService = new ecs.FargateService(this, "WarmPoolService", {
-      serviceName: "prompt2test-playwright-warm",
-      cluster,
-      taskDefinition: taskDef,
-      desiredCount: 3,
-      assignPublicIp: true,   // needed to pull ECR images (no NAT gateway)
-      securityGroups: [sg],
-      vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
-    });
-
-    mcpTG.addTarget(warmService.loadBalancerTarget({
-      containerName: "playwright-mcp",
-      containerPort: 3000,
-    }));
-    novncTG.addTarget(warmService.loadBalancerTarget({
-      containerName: "playwright-mcp",
-      containerPort: 6080,
-    }));
-
-    // ── ECS Autoscaling (min:2, max:8, target CPU 60%) ────────────────────
-    const scaling = warmService.autoScaleTaskCount({ minCapacity: 2, maxCapacity: 8 });
-    scaling.scaleOnCpuUtilization("CpuScaling", {
-      targetUtilizationPercent: 60,
-      scaleInCooldown: cdk.Duration.seconds(120),
-      scaleOutCooldown: cdk.Duration.seconds(60),
-    });
-
-    // ── SSM: NLB DNS for agent runtime ────────────────────────────────────
-    new ssm.StringParameter(this, "NlbDnsParam", {
-      parameterName: "/prompt2test/playwright/nlb-dns",
-      stringValue: nlb.loadBalancerDnsName,
-      description: "NLB DNS — agent MCP + noVNC endpoint (TCP passthrough, no Host-header rewrite)",
-    });
-
-    new ssm.StringParameter(this, "WarmServiceNameParam", {
-      parameterName: "/prompt2test/playwright/warm-service-name",
-      stringValue: "prompt2test-playwright-warm",
-      description: "ECS service name for warm pool",
-    });
-
     // ── CodePipeline: Source → Build only ────────────────────────────────
     const sourceOutput = new codepipeline.Artifact("SourceOutput");
     const buildOutput  = new codepipeline.Artifact("BuildOutput");
@@ -334,11 +233,6 @@ export class PlaywrightMCPStack extends cdk.Stack {
     new cdk.CfnOutput(this, "SecurityGroupId", {
       value: sg.securityGroupId,
       description: "Security group ID — copy into AgentCore env var PLAYWRIGHT_SG_ID",
-    });
-
-    new cdk.CfnOutput(this, "NlbDns", {
-      value: nlb.loadBalancerDnsName,
-      description: "NLB DNS — fixed TCP endpoint for MCP (:3000) and noVNC (:6080)",
     });
 
     new cdk.CfnOutput(this, "PipelineConsoleUrl", {
