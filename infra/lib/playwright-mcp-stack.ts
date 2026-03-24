@@ -100,12 +100,11 @@ export class PlaywrightMCPStack extends cdk.Stack {
     const sg = new ec2.SecurityGroup(this, "PlaywrightSG", {
       vpc,
       securityGroupName: "prompt2test-playwright-mcp-sg",
-      description: "Playwright MCP: allow traffic from ALB only",
+      description: "Playwright MCP: port 3000 (MCP) + port 6080 (noVNC)",
     });
-    // Allow ALB → ECS task on all three ports
-    sg.addIngressRule(albSg, ec2.Port.tcp(3000), "MCP from ALB");
-    sg.addIngressRule(albSg, ec2.Port.tcp(6080), "noVNC from ALB");
-    sg.addIngressRule(albSg, ec2.Port.tcp(8080), "Health check from ALB");
+    sg.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(3000), "MCP SSE - agent connects here");
+    sg.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(6080), "noVNC - watch browser live (headed mode)");
+    sg.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(8080), "Health check port");
 
     // ── ECS Cluster ───────────────────────────────────────────────────────
     const cluster = new ecs.Cluster(this, "PlaywrightCluster", {
