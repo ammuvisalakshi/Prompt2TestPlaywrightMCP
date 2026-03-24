@@ -112,6 +112,21 @@ export class PlaywrightMCPStack extends cdk.Stack {
       vpc,
     });
 
+    // ── ECS Task Role — allows container to register its public IP in SSM ──
+    const taskRole = new iam.Role(this, "ECSTaskRole", {
+      assumedBy: new iam.ServicePrincipal("ecs-tasks.amazonaws.com"),
+      inlinePolicies: {
+        SsmRegistration: new iam.PolicyDocument({
+          statements: [
+            new iam.PolicyStatement({
+              actions: ["ssm:PutParameter"],
+              resources: [`arn:aws:ssm:${this.region}:${this.account}:parameter/prompt2test/*`],
+            }),
+          ],
+        }),
+      },
+    });
+
     // ── ECS Execution Role ────────────────────────────────────────────────
     const executionRole = new iam.Role(this, "ECSExecutionRole", {
       assumedBy: new iam.ServicePrincipal("ecs-tasks.amazonaws.com"),
@@ -131,6 +146,7 @@ export class PlaywrightMCPStack extends cdk.Stack {
         operatingSystemFamily: ecs.OperatingSystemFamily.LINUX,
       },
       executionRole,
+      taskRole,   // allows container to call ssm:PutParameter on startup
     });
 
     taskDef.addContainer("playwright-mcp", {

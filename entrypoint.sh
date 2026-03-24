@@ -36,6 +36,24 @@ echo "  noVNC       : ${NOVNC_PORT}"
 fi
 echo "========================================"
 
+# ── Register public IP in SSM so agent can connect directly to MCP ───────
+# ALB rewrites Host header which breaks playwright-mcp SSE — agent uses direct IP.
+# ALB is still used for noVNC (port 6080) which has no CSRF restriction.
+REGION="${AWS_DEFAULT_REGION:-us-east-1}"
+PUBLIC_IP=$(curl -sf --max-time 10 http://checkip.amazonaws.com || echo "")
+if [ -n "$PUBLIC_IP" ]; then
+    aws ssm put-parameter \
+        --name "/prompt2test/playwright/current-mcp-host" \
+        --value "$PUBLIC_IP" \
+        --type String \
+        --overwrite \
+        --region "$REGION" \
+    && echo "[startup] Registered public IP for MCP: $PUBLIC_IP" \
+    || echo "[startup] WARNING: Failed to register IP in SSM"
+else
+    echo "[startup] WARNING: Could not determine public IP"
+fi
+
 # ── Health check server (port 8080) — used by ALB ────────────────────────
 # Runs in background, responds 200 OK to any request
 node -e "

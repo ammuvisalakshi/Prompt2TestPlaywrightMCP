@@ -44,6 +44,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     procps \
     && rm -rf /var/lib/apt/lists/*
 
+# ── Install AWS CLI v2 (ARM64) — used by entrypoint to register public IP in SSM ──
+RUN curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip" -o /tmp/awscliv2.zip \
+    && cd /tmp && unzip -q awscliv2.zip && ./aws/install \
+    && rm -rf /tmp/awscliv2.zip /tmp/aws
+
 # ── Install @playwright/mcp globally ────────────────────────────────────
 RUN npm install -g @playwright/mcp@latest
 
