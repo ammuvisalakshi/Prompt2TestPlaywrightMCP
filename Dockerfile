@@ -42,6 +42,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-liberation \
     # Process management
     procps \
+    # AWS CLI dependencies
+    unzip \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Install AWS CLI v2 (ARM64) — used by entrypoint to register public IP in SSM ──
