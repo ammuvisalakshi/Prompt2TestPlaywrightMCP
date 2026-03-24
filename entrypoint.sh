@@ -79,8 +79,7 @@ if [ "$BROWSER_MODE" = "headed" ]; then
         --port ${MCP_PORT} \
         --host 0.0.0.0 \
         --allowed-origins "*" \
-        --browser chromium \
-        --isolated
+        --browser chromium
 
 else
 
