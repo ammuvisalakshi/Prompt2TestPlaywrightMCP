@@ -8,6 +8,7 @@ import * as codepipeline from "aws-cdk-lib/aws-codepipeline";
 import * as codepipeline_actions from "aws-cdk-lib/aws-codepipeline-actions";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as ecs from "aws-cdk-lib/aws-ecs";
+import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
 import * as ssm from "aws-cdk-lib/aws-ssm";
 
 export class PlaywrightMCPStack extends cdk.Stack {
@@ -86,15 +87,25 @@ export class PlaywrightMCPStack extends cdk.Stack {
       ],
     });
 
-    // ── Security Group ────────────────────────────────────────────────────
+    // ── ALB Security Group ────────────────────────────────────────────────
+    const albSg = new ec2.SecurityGroup(this, "PlaywrightAlbSG", {
+      vpc,
+      securityGroupName: "prompt2test-playwright-alb-sg",
+      description: "ALB: inbound :3000 (MCP) + :6080 (noVNC) from internet",
+    });
+    albSg.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(3000), "MCP from agent");
+    albSg.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(6080), "noVNC from browser");
+
+    // ── ECS Task Security Group ───────────────────────────────────────────
     const sg = new ec2.SecurityGroup(this, "PlaywrightSG", {
       vpc,
       securityGroupName: "prompt2test-playwright-mcp-sg",
-      description: "Playwright MCP: port 3000 (MCP) + port 6080 (noVNC)",
+      description: "Playwright MCP: allow traffic from ALB only",
     });
-    sg.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(3000), "MCP SSE - agent connects here");
-    sg.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(6080), "noVNC - watch browser live (headed mode)");
-    sg.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(8080), "Health check port");
+    // Allow ALB → ECS task on all three ports
+    sg.addIngressRule(albSg, ec2.Port.tcp(3000), "MCP from ALB");
+    sg.addIngressRule(albSg, ec2.Port.tcp(6080), "noVNC from ALB");
+    sg.addIngressRule(albSg, ec2.Port.tcp(8080), "Health check from ALB");
 
     // ── ECS Cluster ───────────────────────────────────────────────────────
     const cluster = new ecs.Cluster(this, "PlaywrightCluster", {
@@ -144,7 +155,6 @@ export class PlaywrightMCPStack extends cdk.Stack {
         interval: cdk.Duration.seconds(30),
         timeout: cdk.Duration.seconds(5),
         retries: 3,
-        startPeriod: cdk.Duration.seconds(60),
       },
     });
 
@@ -176,23 +186,95 @@ export class PlaywrightMCPStack extends cdk.Stack {
       description: "Security group ID for RunTask network config",
     });
 
-    // ── Warm Pool Service (desiredCount=1, no ALB) ────────────────────────────
-    // Keeps 1 task always running so the agent can claim it instantly (0 cold start).
-    // When agent stops the task after use, the service automatically starts a fresh one.
-    new ecs.FargateService(this, "WarmPoolService", {
+    // ── ALB (internet-facing) ─────────────────────────────────────────────
+    // Provides a fixed DNS name — no IP discovery needed at runtime.
+    const alb = new elbv2.ApplicationLoadBalancer(this, "PlaywrightALB", {
+      vpc,
+      internetFacing: true,
+      loadBalancerName: "prompt2test-playwright-alb",
+      securityGroup: albSg,
+      vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
+    });
+
+    // ── Target Group: MCP port 3000 ───────────────────────────────────────
+    const mcpTG = new elbv2.ApplicationTargetGroup(this, "McpTargetGroup", {
+      vpc,
+      port: 3000,
+      protocol: elbv2.ApplicationProtocol.HTTP,
+      targetType: elbv2.TargetType.IP,
+      healthCheck: {
+        port: "8080",
+        path: "/",
+        healthyHttpCodes: "200",
+        interval: cdk.Duration.seconds(15),
+        timeout: cdk.Duration.seconds(5),
+        healthyThresholdCount: 2,
+        unhealthyThresholdCount: 3,
+      },
+    });
+
+    // ── Target Group: noVNC port 6080 (sticky for WebSocket) ─────────────
+    const novncTG = new elbv2.ApplicationTargetGroup(this, "NovncTargetGroup", {
+      vpc,
+      port: 6080,
+      protocol: elbv2.ApplicationProtocol.HTTP,
+      targetType: elbv2.TargetType.IP,
+      healthCheck: {
+        port: "8080",
+        path: "/",
+        healthyHttpCodes: "200",
+        interval: cdk.Duration.seconds(15),
+        timeout: cdk.Duration.seconds(5),
+        healthyThresholdCount: 2,
+        unhealthyThresholdCount: 3,
+      },
+      // Sticky sessions — ensures noVNC WebSocket upgrade hits the same task
+      stickinessCookieDuration: cdk.Duration.hours(1),
+    });
+
+    // ── ALB Listeners ─────────────────────────────────────────────────────
+    alb.addListener("McpListener", {
+      port: 3000,
+      protocol: elbv2.ApplicationProtocol.HTTP,
+      defaultTargetGroups: [mcpTG],
+    });
+
+    alb.addListener("NovncListener", {
+      port: 6080,
+      protocol: elbv2.ApplicationProtocol.HTTP,
+      defaultTargetGroups: [novncTG],
+    });
+
+    // ── Warm Pool Service (desiredCount=1) — attached to ALB ──────────────
+    // Keeps 1 task always running. Agent connects via ALB DNS (no IP discovery).
+    // Task is never stopped — playwright-mcp --isolated gives each session a fresh context.
+    const warmService = new ecs.FargateService(this, "WarmPoolService", {
       serviceName: "prompt2test-playwright-warm",
       cluster,
       taskDefinition: taskDef,
       desiredCount: 1,
-      assignPublicIp: true,
+      assignPublicIp: true,   // needed to pull ECR images (no NAT gateway)
       securityGroups: [sg],
       vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
+    });
+
+    warmService.attachToApplicationTargetGroup(mcpTG);
+    novncTG.addTarget(warmService.loadBalancerTarget({
+      containerName: "playwright-mcp",
+      containerPort: 6080,
+    }));
+
+    // ── SSM: ALB DNS for agent runtime ────────────────────────────────────
+    new ssm.StringParameter(this, "AlbDnsParam", {
+      parameterName: "/prompt2test/playwright/alb-dns",
+      stringValue: alb.loadBalancerDnsName,
+      description: "ALB DNS — agent uses this instead of per-task IP discovery",
     });
 
     new ssm.StringParameter(this, "WarmServiceNameParam", {
       parameterName: "/prompt2test/playwright/warm-service-name",
       stringValue: "prompt2test-playwright-warm",
-      description: "ECS service name for warm pool — agent claims running tasks from here",
+      description: "ECS service name for warm pool",
     });
 
     // ── CodePipeline: Source → Build only (no Deploy — agent spins up tasks on demand) ──
@@ -253,6 +335,11 @@ export class PlaywrightMCPStack extends cdk.Stack {
     new cdk.CfnOutput(this, "SecurityGroupId", {
       value: sg.securityGroupId,
       description: "Security group ID — copy into AgentCore env var PLAYWRIGHT_SG_ID",
+    });
+
+    new cdk.CfnOutput(this, "AlbDns", {
+      value: alb.loadBalancerDnsName,
+      description: "ALB DNS — fixed endpoint for MCP (:3000) and noVNC (:6080)",
     });
 
     new cdk.CfnOutput(this, "PipelineConsoleUrl", {
