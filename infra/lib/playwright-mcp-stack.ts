@@ -90,8 +90,9 @@ export class PlaywrightMCPStack extends cdk.Stack {
     const sg = new ec2.SecurityGroup(this, "PlaywrightSG", {
       vpc,
       securityGroupName: "prompt2test-playwright-mcp-sg",
-      description: "Playwright MCP: port 3000 (MCP) + port 6080 (noVNC)",
+      description: "Playwright MCP: port 443 (Caddy proxy) + 3000 (MCP) + 6080 (noVNC)",
     });
+    sg.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(443),  "Caddy reverse proxy - VPN-friendly entry point for noVNC + MCP");
     sg.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(3000), "MCP SSE - direct from agent");
     sg.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(6080), "noVNC - direct from browser");
     sg.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(8080), "Health check port");
@@ -128,6 +129,7 @@ export class PlaywrightMCPStack extends cdk.Stack {
       image: ecs.ContainerImage.fromEcrRepository(ecrRepo, "latest"),
       containerName: "playwright-mcp",
       portMappings: [
+        { containerPort: 443,  name: "caddy" },
         { containerPort: 3000, name: "mcp" },
         { containerPort: 6080, name: "novnc" },
         { containerPort: 8080, name: "health" },
