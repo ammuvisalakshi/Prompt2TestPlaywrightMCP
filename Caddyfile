@@ -1,0 +1,28 @@
+# Caddy reverse proxy — serves noVNC + MCP on port 443
+# so corporate VPNs (which block non-standard ports) can reach the live browser.
+#
+# Routes:
+#   /sse, /message  → Playwright MCP server (localhost:3000)
+#   everything else → noVNC web viewer (localhost:6080)
+#
+# Uses self-signed TLS on a raw IP (no domain needed).
+# This works because the UI already accepts the connection without cert warnings.
+
+:443 {
+	tls internal
+
+	# Playwright MCP SSE endpoint — must come before the catch-all
+	handle /sse {
+		reverse_proxy localhost:3000
+	}
+
+	# Playwright MCP message endpoint (used by some MCP client versions)
+	handle /message {
+		reverse_proxy localhost:3000
+	}
+
+	# Everything else → noVNC
+	handle {
+		reverse_proxy localhost:6080
+	}
+}
