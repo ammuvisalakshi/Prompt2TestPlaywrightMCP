@@ -49,8 +49,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # ── Install @playwright/mcp globally ────────────────────────────────────
 RUN npm install -g @playwright/mcp@latest
 
-# ── Tell Playwright to use the system Chromium ───────────────────────────
-ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+# ── Install Playwright browsers (Chromium) ───────────────────────────────
+# @playwright/mcp may not respect PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH,
+# so install its bundled Chromium as well. The system chromium is still
+# used for headed mode via Xvfb.
+RUN npx playwright install chromium 2>/dev/null || true
 ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
 
 # ── Copy entrypoint ──────────────────────────────────────────────────────
