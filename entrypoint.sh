@@ -74,9 +74,37 @@ if [ "$BROWSER_MODE" = "headed" ]; then
 
     echo "[headed] noVNC ready — open http://<HOST>:${NOVNC_PORT}/vnc.html to watch the browser"
 
-    echo "[headed] Starting Caddy reverse proxy on port 443..."
-    caddy start --config /app/Caddyfile
-    echo "[headed] Caddy ready — https://<HOST>:443/vnc.html (VPN-friendly)"
+    echo "[headed] Detecting public IP for sslip.io TLS cert..."
+    PUBLIC_IP=$(curl -s --connect-timeout 5 http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null || curl -s --connect-timeout 5 https://checkip.amazonaws.com 2>/dev/null || echo "")
+
+    if [ -n "$PUBLIC_IP" ]; then
+        # Convert dots to dashes for sslip.io: 44.195.45.47 → 44-195-45-47
+        SSLIP_DOMAIN="$(echo $PUBLIC_IP | tr '.' '-').sslip.io"
+        echo "[headed] Public IP: $PUBLIC_IP → domain: $SSLIP_DOMAIN"
+
+        # Generate Caddyfile with real Let's Encrypt cert via sslip.io
+        cat > /app/Caddyfile.live <<CADDYEOF
+$SSLIP_DOMAIN {
+    handle /sse {
+        reverse_proxy localhost:3000
+    }
+    handle /message {
+        reverse_proxy localhost:3000
+    }
+    handle {
+        reverse_proxy localhost:6080
+    }
+}
+CADDYEOF
+        CADDY_CONFIG="/app/Caddyfile.live"
+    else
+        echo "[headed] Could not detect public IP — falling back to self-signed cert"
+        CADDY_CONFIG="/app/Caddyfile"
+    fi
+
+    echo "[headed] Starting Caddy reverse proxy..."
+    caddy start --config "$CADDY_CONFIG"
+    echo "[headed] Caddy ready — https://$SSLIP_DOMAIN/vnc.html"
 
     echo "[headed] Starting Playwright MCP server on port ${MCP_PORT}..."
     exec npx @playwright/mcp \

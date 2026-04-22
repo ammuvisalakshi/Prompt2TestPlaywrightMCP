@@ -42,6 +42,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-liberation \
     # Process management
     procps \
+    # Detect public IP for sslip.io cert
+    curl \
     # Reverse proxy — serves noVNC + MCP on port 443 so corporate VPNs don't block
     caddy \
     && rm -rf /var/lib/apt/lists/*
@@ -72,7 +74,7 @@ ENV DISPLAY_NUM=99
 # ── Ports ────────────────────────────────────────────────────────────────
 # 3000 — Playwright MCP SSE endpoint (agent connects here)
 # 6080 — noVNC web viewer (DEV headed mode — QA watches browser live)
-EXPOSE 443 3000 6080
+EXPOSE 80 443 3000 6080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD node -e "require('http').get('http://localhost:3000/health', r => process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
