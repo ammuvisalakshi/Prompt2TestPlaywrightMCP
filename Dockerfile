@@ -35,6 +35,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-liberation \
     # Process management
     procps \
+    # TLS root certificates (required for Caddy's Let's Encrypt ACME)
+    ca-certificates \
     # Detect public IP for sslip.io cert
     curl \
     # Reverse proxy — serves MCP + CDP proxy on port 443 with auto TLS
