@@ -95,7 +95,26 @@ if [ "$BROWSER_MODE" = "headed" ]; then
 
     # ── 2. Detect public IP + start Caddy ────────────────────────────────
     echo "[headed] Detecting public IP for sslip.io TLS cert..."
-    PUBLIC_IP=$(curl -s --connect-timeout 5 http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null || curl -s --connect-timeout 5 https://checkip.amazonaws.com 2>/dev/null || echo "")
+    # Try ECS Fargate metadata (v4), then EC2 metadata, then external service
+    PUBLIC_IP=""
+    if [ -n "$ECS_CONTAINER_METADATA_URI_V4" ]; then
+        # Fargate: get task metadata → ENI → public IP
+        TASK_META=$(curl -s --connect-timeout 3 "${ECS_CONTAINER_METADATA_URI_V4}/task" 2>/dev/null)
+        PUBLIC_IP=$(echo "$TASK_META" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const t=JSON.parse(d);const c=t.Containers||[];for(const x of c){for(const n of (x.Networks||[])){if(n.IPv4Addresses){console.log(n.IPv4Addresses[0]);process.exit(0)}}}}catch{};})" 2>/dev/null)
+        # Fargate doesn't expose public IP in metadata — fall back to external
+        if [ -z "$PUBLIC_IP" ] || echo "$PUBLIC_IP" | grep -qE '^(10\.|172\.(1[6-9]|2|3[01])\.|192\.168\.)'; then
+            PUBLIC_IP=""
+        fi
+    fi
+    if [ -z "$PUBLIC_IP" ]; then
+        PUBLIC_IP=$(curl -s --connect-timeout 5 http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null || echo "")
+    fi
+    if [ -z "$PUBLIC_IP" ]; then
+        PUBLIC_IP=$(curl -s --connect-timeout 5 https://checkip.amazonaws.com 2>/dev/null | tr -d '[:space:]' || echo "")
+    fi
+    if [ -z "$PUBLIC_IP" ]; then
+        PUBLIC_IP=$(curl -s --connect-timeout 5 http://ifconfig.me 2>/dev/null | tr -d '[:space:]' || echo "")
+    fi
 
     if [ -n "$PUBLIC_IP" ]; then
         SSLIP_DOMAIN="$(echo $PUBLIC_IP | tr '.' '-').sslip.io"
