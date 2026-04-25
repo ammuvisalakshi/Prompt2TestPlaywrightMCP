@@ -2,15 +2,15 @@
 # ── Playwright MCP Server Entrypoint ────────────────────────────────────
 #
 # Reads BROWSER_MODE env var at startup:
-#   headed   → starts Xvfb + x11vnc + noVNC + Playwright MCP (headed Chromium)
+#   headed   → starts Playwright MCP (headed Chromium) + CDP screencast proxy
 #   headless → starts Playwright MCP (headless Chromium only)
 #
 # Environment variables:
 #   BROWSER_MODE   headed | headless  (default: headless)
 #   MCP_PORT       MCP SSE port       (default: 3000)
-#   NOVNC_PORT     noVNC web port     (default: 6080)
+#   CDP_PORT       Chrome CDP port    (default: 9222)
+#   PROXY_PORT     CDP proxy port     (default: 6080)
 #   HEALTH_PORT    ALB health check   (default: 8080)
-#   DISPLAY_NUM    Xvfb display num   (default: 99)
 
 set -e
 
@@ -22,17 +22,18 @@ rm -rf /tmp/playwright-* /root/.config/chromium /root/.config/google-chrome 2>/d
 
 BROWSER_MODE=${BROWSER_MODE:-headless}
 MCP_PORT=${MCP_PORT:-3000}
-NOVNC_PORT=${NOVNC_PORT:-6080}
+CDP_PORT=${CDP_PORT:-9222}
+PROXY_PORT=${PROXY_PORT:-6080}
 HEALTH_PORT=${HEALTH_PORT:-8080}
-DISPLAY_NUM=${DISPLAY_NUM:-99}
 
 echo "========================================"
 echo "  Playwright MCP Server"
 echo "  Mode        : ${BROWSER_MODE}"
 echo "  MCP Port    : ${MCP_PORT}"
+echo "  CDP Port    : ${CDP_PORT}"
 echo "  Health Port : ${HEALTH_PORT}"
 if [ "$BROWSER_MODE" = "headed" ]; then
-echo "  noVNC       : ${NOVNC_PORT}"
+echo "  CDP Proxy   : ${PROXY_PORT}"
 fi
 echo "========================================"
 
@@ -47,33 +48,6 @@ node -e "
 
 if [ "$BROWSER_MODE" = "headed" ]; then
 
-    echo "[headed] Starting Xvfb virtual display on :${DISPLAY_NUM}..."
-    Xvfb :${DISPLAY_NUM} -screen 0 1280x800x24 -ac +extension GLX +render -noreset &
-    XVFB_PID=$!
-    export DISPLAY=:${DISPLAY_NUM}
-
-    # Wait for Xvfb to be ready
-    sleep 2
-
-    echo "[headed] Starting x11vnc VNC server..."
-    x11vnc \
-        -display :${DISPLAY_NUM} \
-        -nopw \
-        -forever \
-        -shared \
-        -quiet \
-        -bg \
-        -rfbport 5900
-
-    echo "[headed] Starting noVNC web viewer on port ${NOVNC_PORT}..."
-    websockify \
-        --web=/usr/share/novnc \
-        --daemon \
-        ${NOVNC_PORT} \
-        localhost:5900
-
-    echo "[headed] noVNC ready — open http://<HOST>:${NOVNC_PORT}/vnc.html to watch the browser"
-
     echo "[headed] Detecting public IP for sslip.io TLS cert..."
     PUBLIC_IP=$(curl -s --connect-timeout 5 http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null || curl -s --connect-timeout 5 https://checkip.amazonaws.com 2>/dev/null || echo "")
 
@@ -82,17 +56,22 @@ if [ "$BROWSER_MODE" = "headed" ]; then
         SSLIP_DOMAIN="$(echo $PUBLIC_IP | tr '.' '-').sslip.io"
         echo "[headed] Public IP: $PUBLIC_IP → domain: $SSLIP_DOMAIN"
 
-        # Generate Caddyfile with real Let's Encrypt cert via sslip.io
+        # Generate Caddyfile — proxy MCP + CDP screencast through TLS
         cat > /app/Caddyfile.live <<CADDYEOF
 $SSLIP_DOMAIN {
     handle /sse {
-        reverse_proxy localhost:3000
+        reverse_proxy localhost:${MCP_PORT}
     }
     handle /message {
-        reverse_proxy localhost:3000
+        reverse_proxy localhost:${MCP_PORT}
     }
     handle {
-        reverse_proxy localhost:6080
+        @websocket {
+            header Connection *Upgrade*
+            header Upgrade websocket
+        }
+        reverse_proxy @websocket localhost:${PROXY_PORT}
+        reverse_proxy localhost:${PROXY_PORT}
     }
 }
 CADDYEOF
@@ -104,14 +83,19 @@ CADDYEOF
 
     echo "[headed] Starting Caddy reverse proxy..."
     caddy start --config "$CADDY_CONFIG"
-    echo "[headed] Caddy ready — https://$SSLIP_DOMAIN/vnc.html"
+    echo "[headed] Caddy ready — wss://$SSLIP_DOMAIN (CDP screencast)"
+
+    # Start CDP screencast proxy (background) — waits for Chrome CDP to be ready
+    echo "[headed] Starting CDP screencast proxy on port ${PROXY_PORT}..."
+    CDP_PORT=${CDP_PORT} PROXY_PORT=${PROXY_PORT} node /app/cdp-proxy.mjs &
 
     echo "[headed] Starting Playwright MCP server on port ${MCP_PORT}..."
     exec npx @playwright/mcp \
         --port ${MCP_PORT} \
         --host 0.0.0.0 \
         --allowed-origins "*" \
-        --browser chromium
+        --browser chromium \
+        --browser-args="--remote-debugging-port=${CDP_PORT} --remote-debugging-address=127.0.0.1"
 
 else
 
