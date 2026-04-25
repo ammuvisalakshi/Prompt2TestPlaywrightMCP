@@ -2,8 +2,12 @@
 # ── Playwright MCP Server Entrypoint ────────────────────────────────────
 #
 # Reads BROWSER_MODE env var at startup:
-#   headed   → starts Playwright MCP (headed Chromium) + CDP screencast proxy
-#   headless → starts Playwright MCP (headless Chromium only)
+#   headed   → headless Chromium + CDP screencast proxy (live browser view)
+#   headless → headless Chromium only (no live view)
+#
+# "headed" mode uses headless Chrome + CDP Page.startScreencast to stream
+# frames to the UI. This replaces the old Xvfb + noVNC approach — same
+# live view experience with less overhead.
 #
 # Environment variables:
 #   BROWSER_MODE   headed | headless  (default: headless)
@@ -30,15 +34,23 @@ echo "========================================"
 echo "  Playwright MCP Server"
 echo "  Mode        : ${BROWSER_MODE}"
 echo "  MCP Port    : ${MCP_PORT}"
-echo "  CDP Port    : ${CDP_PORT}"
 echo "  Health Port : ${HEALTH_PORT}"
 if [ "$BROWSER_MODE" = "headed" ]; then
+echo "  CDP Port    : ${CDP_PORT}"
 echo "  CDP Proxy   : ${PROXY_PORT}"
 fi
 echo "========================================"
 
+# ── Chrome wrapper — injects --remote-debugging-port for CDP access ─────
+# Playwright calls PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH to launch Chrome.
+# This wrapper adds the CDP flag transparently.
+cat > /usr/local/bin/chromium-cdp <<WRAPPER
+#!/bin/bash
+exec /usr/bin/chromium "\$@" --remote-debugging-port=${CDP_PORT} --remote-debugging-address=127.0.0.1
+WRAPPER
+chmod +x /usr/local/bin/chromium-cdp
+
 # ── Health check server (port 8080) — used by NLB ────────────────────────
-# Runs in background, responds 200 OK to any request
 node -e "
   require('http').createServer((req, res) => {
     res.writeHead(200, {'Content-Type': 'text/plain'});
@@ -48,15 +60,16 @@ node -e "
 
 if [ "$BROWSER_MODE" = "headed" ]; then
 
+    # Use the CDP wrapper so Chrome exposes the debug port
+    export PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/local/bin/chromium-cdp
+
     echo "[headed] Detecting public IP for sslip.io TLS cert..."
     PUBLIC_IP=$(curl -s --connect-timeout 5 http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null || curl -s --connect-timeout 5 https://checkip.amazonaws.com 2>/dev/null || echo "")
 
     if [ -n "$PUBLIC_IP" ]; then
-        # Convert dots to dashes for sslip.io: 44.195.45.47 → 44-195-45-47
         SSLIP_DOMAIN="$(echo $PUBLIC_IP | tr '.' '-').sslip.io"
         echo "[headed] Public IP: $PUBLIC_IP → domain: $SSLIP_DOMAIN"
 
-        # Generate Caddyfile — proxy MCP + CDP screencast through TLS
         cat > /app/Caddyfile.live <<CADDYEOF
 $SSLIP_DOMAIN {
     handle /sse {
@@ -85,17 +98,17 @@ CADDYEOF
     caddy start --config "$CADDY_CONFIG"
     echo "[headed] Caddy ready — wss://$SSLIP_DOMAIN (CDP screencast)"
 
-    # Start CDP screencast proxy (background) — waits for Chrome CDP to be ready
+    # Start CDP screencast proxy (background) — waits for Chrome CDP
     echo "[headed] Starting CDP screencast proxy on port ${PROXY_PORT}..."
     CDP_PORT=${CDP_PORT} PROXY_PORT=${PROXY_PORT} node /app/cdp-proxy.mjs &
 
-    echo "[headed] Starting Playwright MCP server on port ${MCP_PORT}..."
+    echo "[headed] Starting Playwright MCP server (headless + CDP screencast)..."
     exec npx @playwright/mcp \
         --port ${MCP_PORT} \
         --host 0.0.0.0 \
         --allowed-origins "*" \
         --browser chromium \
-        --browser-args="--remote-debugging-port=${CDP_PORT} --remote-debugging-address=127.0.0.1"
+        --headless
 
 else
 
