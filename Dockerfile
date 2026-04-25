@@ -48,11 +48,10 @@ RUN npm install -g @playwright/mcp@latest
 RUN npx playwright install chromium 2>/dev/null || true
 ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
 
-# ── Install ws package for CDP screencast proxy ─────────────────────────
-RUN npm install -g ws
-
 # ── Copy entrypoint + CDP proxy ─────────────────────────────────────────
 WORKDIR /app
+COPY package.json /app/package.json
+RUN npm install --omit=dev
 COPY entrypoint.sh /app/entrypoint.sh
 COPY cdp-proxy.mjs /app/cdp-proxy.mjs
 COPY Caddyfile /app/Caddyfile
