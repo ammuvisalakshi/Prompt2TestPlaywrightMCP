@@ -1,11 +1,9 @@
 /**
  * CDP Screencast Proxy — streams live browser frames via WebSocket.
  *
- * Replaces noVNC + Xvfb + x11vnc with a single lightweight process.
- * Connects to Chrome's DevTools Protocol on localhost:9222, runs
- * Page.startScreencast, and forwards JPEG frames to browser clients.
- *
- * Also forwards mouse/keyboard input from clients back to Chrome.
+ * Serves a self-contained viewer HTML page on HTTP GET requests,
+ * and streams CDP screencast frames on WebSocket connections.
+ * Navigate to https://{sslip_domain}/ to see the live browser.
  *
  * Usage:
  *   CDP_PORT=9222 PROXY_PORT=6080 node cdp-proxy.mjs
@@ -19,6 +17,49 @@ const PROXY_PORT = parseInt(process.env.PROXY_PORT || '6080', 10)
 const QUALITY    = parseInt(process.env.CDP_QUALITY || '60', 10)
 const MAX_WIDTH  = parseInt(process.env.CDP_MAX_WIDTH || '1280', 10)
 const MAX_HEIGHT = parseInt(process.env.CDP_MAX_HEIGHT || '720', 10)
+
+// ── Viewer HTML — served on HTTP GET ────────────────────────────────────
+
+const VIEWER_HTML = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Prompt2Test — Live Browser</title>
+<style>*{margin:0;padding:0;box-sizing:border-box}body{background:#0f172a;display:flex;align-items:center;justify-content:center;height:100vh;font-family:-apple-system,sans-serif;color:#e2e8f0}
+#status{position:absolute;top:12px;left:50%;transform:translateX(-50%);font-size:13px;color:#94a3b8;z-index:1}
+canvas{max-width:100vw;max-height:100vh;border-radius:4px;cursor:default}</style></head>
+<body><div id="status">Connecting to browser...</div><canvas id="c" width="1280" height="720"></canvas>
+<script>
+var wsProto=location.protocol==="https:"?"wss:":"ws:";
+var wsUrl=wsProto+"//"+location.host;
+var canvas=document.getElementById("c"),ctx=canvas.getContext("2d"),status=document.getElementById("status");
+var ws,retries=0,maxRetries=30;
+function connect(){
+  status.textContent="Connecting... (attempt "+(retries+1)+")";status.style.opacity="1";
+  ws=new WebSocket(wsUrl);ws.binaryType="arraybuffer";
+  ws.onopen=function(){ws.send(JSON.stringify({quality:65,maxWidth:1280,maxHeight:720}))};
+  ws.onmessage=function(e){
+    if(typeof e.data==="string"){try{var m=JSON.parse(e.data);if(m.event==="connected"){status.textContent="Connected — watching live";setTimeout(function(){status.style.opacity="0.3"},2000)}else if(m.event==="error"){status.textContent="Error: "+m.message}}catch(x){}}
+    else{var blob=new Blob([e.data],{type:"image/jpeg"});var url=URL.createObjectURL(blob);var img=new Image();img.onload=function(){ctx.drawImage(img,0,0,1280,720);URL.revokeObjectURL(url)};img.src=url}
+  };
+  ws.onerror=function(){};
+  ws.onclose=function(){retries++;if(retries<maxRetries){status.textContent="Reconnecting in 3s... (attempt "+(retries+1)+")";status.style.opacity="1";setTimeout(connect,3000)}else{status.textContent="Browser session ended"}};
+}
+connect();
+canvas.onmousedown=function(e){var r=canvas.getBoundingClientRect();ws&&ws.readyState===1&&ws.send(JSON.stringify({type:"mousePressed",x:Math.round((e.clientX-r.left)*(1280/r.width)),y:Math.round((e.clientY-r.top)*(720/r.height)),button:"left",clickCount:1}))};
+canvas.onmouseup=function(e){var r=canvas.getBoundingClientRect();ws&&ws.readyState===1&&ws.send(JSON.stringify({type:"mouseReleased",x:Math.round((e.clientX-r.left)*(1280/r.width)),y:Math.round((e.clientY-r.top)*(720/r.height)),button:"left",clickCount:1}))};
+canvas.onmousemove=function(e){var r=canvas.getBoundingClientRect();ws&&ws.readyState===1&&ws.send(JSON.stringify({type:"mouseMoved",x:Math.round((e.clientX-r.left)*(1280/r.width)),y:Math.round((e.clientY-r.top)*(720/r.height))}))};
+</script></body></html>`
+
+// ── HTTP server (serves viewer HTML) + WebSocket server ─────────────────
+
+const server = http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/html', 'Access-Control-Allow-Origin': '*' })
+  res.end(VIEWER_HTML)
+})
+
+const wss = new WebSocketServer({ server })
+console.log(`[cdp-proxy] Starting on port ${PROXY_PORT}`)
+
+server.listen(PROXY_PORT, () => {
+  console.log(`[cdp-proxy] Listening on port ${PROXY_PORT} (HTTP viewer + WebSocket screencast)`)
+})
 
 // ── Get Chrome page target's WS URL ─────────────────────────────────────
 
@@ -42,25 +83,7 @@ async function getPageWsUrl() {
   })
 }
 
-// ── Wait for CDP to be available ────────────────────────────────────────
-
-async function waitForCdp(maxAttempts = 30) {
-  for (let i = 0; i < maxAttempts; i++) {
-    try {
-      const url = await getPageWsUrl()
-      console.log(`[cdp-proxy] Chrome CDP ready: ${url}`)
-      return url
-    } catch {
-      await new Promise(r => setTimeout(r, 1000))
-    }
-  }
-  throw new Error(`Chrome CDP not available on port ${CDP_PORT} after ${maxAttempts}s`)
-}
-
-// ── WebSocket server for UI clients ─────────────────────────────────────
-
-const wss = new WebSocketServer({ port: PROXY_PORT })
-console.log(`[cdp-proxy] Listening on port ${PROXY_PORT}`)
+// ── WebSocket handler ───────────────────────────────────────────────────
 
 wss.on('connection', async (clientWs) => {
   console.log('[cdp-proxy] Client connected')
@@ -68,7 +91,7 @@ wss.on('connection', async (clientWs) => {
   let msgId = 0
 
   try {
-    // Wait for config message from client (optional — can connect immediately)
+    // Wait for config message from client
     const config = await new Promise((resolve) => {
       const timeout = setTimeout(() => resolve({}), 2000)
       clientWs.once('message', (data) => {
@@ -106,12 +129,10 @@ wss.on('connection', async (clientWs) => {
         const msg = JSON.parse(raw.toString())
         if (msg.method === 'Page.screencastFrame') {
           const frame = msg.params
-          // Send binary JPEG to client
           const buf = Buffer.from(frame.data, 'base64')
           if (clientWs.readyState === WebSocket.OPEN) {
             clientWs.send(buf)
           }
-          // Ack frame
           cdpWs.send(JSON.stringify({
             id: ++msgId,
             method: 'Page.screencastFrameAck',
@@ -125,7 +146,7 @@ wss.on('connection', async (clientWs) => {
     clientWs.on('message', (data) => {
       if (typeof data !== 'string' && !(data instanceof Buffer)) return
       const str = data.toString()
-      if (str[0] !== '{') return // skip binary, only process JSON
+      if (str[0] !== '{') return
 
       try {
         const ev = JSON.parse(str)
