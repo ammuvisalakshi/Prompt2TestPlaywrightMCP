@@ -1,5 +1,8 @@
-# Fallback Caddyfile — used when entrypoint.sh can't detect the public IP.
-# Uses self-signed TLS on port 443.
+# This file is a TEMPLATE. entrypoint.sh generates the real Caddyfile
+# at /app/Caddyfile.live with the actual sslip.io domain.
+#
+# Fallback: if entrypoint.sh can't detect the public IP, Caddy uses
+# this file with self-signed TLS on port 443.
 
 :443 {
 	tls internal
@@ -13,11 +16,6 @@
 	}
 
 	handle {
-		@websocket {
-			header Connection *Upgrade*
-			header Upgrade websocket
-		}
-		reverse_proxy @websocket localhost:6080
 		reverse_proxy localhost:6080
 	}
 }

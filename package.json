@@ -7,8 +7,7 @@
     "node": ">=20"
   },
   "dependencies": {
-    "@playwright/mcp": "latest",
-    "ws": "^8.18.0"
+    "@playwright/mcp": "latest"
   },
   "scripts": {
     "start:headless": "playwright-mcp --port 3000 --browser chromium --headless",
