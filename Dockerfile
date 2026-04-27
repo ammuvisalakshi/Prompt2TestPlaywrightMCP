@@ -53,12 +53,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # ── Install @playwright/mcp globally ────────────────────────────────────
 RUN npm install -g @playwright/mcp@latest
 
-# ── Install Playwright browsers ──────────────────────────────────────────
-# Install all browser types that @playwright/mcp might need, including
-# chrome-for-testing (required by newer versions) and system dependencies.
-RUN npx playwright install --with-deps chromium chrome 2>/dev/null || \
-    npx playwright install --with-deps chromium 2>/dev/null || true
-ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
+# ── Install browsers ─────────────────────────────────────────────────────
+# Install chrome-for-testing via @playwright/mcp's own installer
+RUN npx @playwright/mcp install-browser chrome-for-testing 2>/dev/null || true
+# Also install Playwright's bundled chromium + system deps as fallback
+RUN npx playwright install --with-deps chromium 2>/dev/null || true
 
 # ── Copy entrypoint ──────────────────────────────────────────────────────
 WORKDIR /app
